@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>gPTP / STBM Time Synchronization Visualizer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="title-block">
+      <h1><a href="docs.html" class="title-link" title="Open the detailed explanation of how gPTP / STBM synchronization works">gPTP&nbsp;/&nbsp;STBM Time Synchronization</a></h1>
+      <p class="subtitle">Master (Grandmaster) &rarr; Slave &middot; IEEE&nbsp;802.1AS gPTP &middot; AUTOSAR Synchronized Time-Base Manager</p>
+    </div>
+    <!-- ================= SIMULATION CONFIG (header center) ================= -->
+    <div class="sim-inline">
+      <span class="sim-title">Simulation</span>
+      <label class="sim-field" title="Total simulation length (in ms). The run auto-stops when the simulation clock reaches this value. 0 = run indefinitely. The run always starts at 0.">
+        <span class="sim-lbl">Length <span class="unit">ms · 0=∞</span></span>
+        <input type="number" id="cfgStop" value="4000" step="1000" />
+      </label>
+      <label class="sim-field" title="Playback rate relative to real time. 1× = real time, lower values slow the simulation down. Affects only how fast time advances on screen, not the modeled physics or timestamps.">
+        <span class="sim-lbl">Speed <output id="outSpeed">0.40×</output></span>
+        <input type="range" id="cfgSpeed" min="0.01" max="1" step="0.01" value="0.4" />
+      </label>
+      <label class="sim-field" title="Base offset (ms) added to the 32-bit clock so timestamps start from a realistic large value instead of 0. Purely cosmetic for the absolute time display; does not change offsets or accuracy.">
+        <span class="sim-lbl">Epoch <span class="unit">ms</span></span>
+        <input type="number" id="cfgEpoch" value="0" step="1000" />
+      </label>
+      <label class="sim-field" title="gPTP timestamping mode. 2-step: the Sync frame is sent first, then a Follow_Up message carries the preciseOriginTimestamp (t₁) and correctionField. 1-step: the Sync frame itself carries t₁ and the correctionField — no Follow_Up is sent.">
+        <span class="sim-lbl">Mode</span>
+        <select id="cfgStepMode">
+          <option value="2" selected>2-step</option>
+          <option value="1">1-step</option>
+        </select>
+      </label>
+      <label class="sim-field" title="RX timestamping method at the slave. HW: the Sync ingress time (t₂) is captured by the MAC in hardware, so the variable software poll/bus notify delay (Δp) does NOT corrupt the measured offset. SW: a software timestamp is taken at poll-service time, leaking Δp into t₂ as error + jitter.">
+        <span class="sim-lbl">Timestamp</span>
+        <select id="cfgTsMode">
+          <option value="hw" selected>HW</option>
+          <option value="sw">SW</option>
+        </select>
+      </label>
+      <label class="sim-field sim-chk" title="Enable the peer-delay (Pdelay) handshake that measures link propagation delay (meanPathDelay δ). When enabled, the offset subtracts δ. When disabled, no Pdelay frames run, δ is assumed 0, and the link propagation delay remains uncompensated in the offset.">
+        <span class="sim-lbl">Pdelay</span>
+        <input type="checkbox" id="cfgPdelayEn" checked />
+      </label>
+    </div>
+    <div class="sim-controls">
+      <button id="btnToggleConfig" class="btn btn-ghost active" title="Show/hide configuration panel">☰ Config</button>
+      <button id="btnStart" class="btn btn-primary">▶</button>
+      <button id="btnPause" class="btn" disabled>⏸</button>
+      <label class="sim-step" title="Step mode. When enabled, ▶ advances the simulation by one step (the size in the box) per click instead of running continuously.">
+        <input type="checkbox" id="cfgStepEn" />
+        <span>Step</span>
+        <input type="number" id="cfgStep" value="50" min="1" step="10" />
+        <span class="unit">ms</span>
+      </label>
+      <button id="btnReset" class="btn btn-ghost">⟲</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- ================= SYNC PANEL: nodes + link + gPTP timestamps combined ================= -->
+    <div class="top-band">
+      <div class="panel sync-panel">
+        <h2>gPTP timestamping &amp; correction <span class="hint">— HW timestamps shown on the node that captures them</span></h2>
+        <div class="sync-grid">
+
+          <!-- Master node -->
+          <div class="sync-col sync-master">
+            <div class="node node-master" id="nodeMaster">
+              <div class="node-icon">🛰️</div>
+              <div class="node-name">Domain Master</div>
+              <div class="node-clock" id="masterHuman">--:--:--.---</div>
+              <div class="node-raw" id="masterRaw">0 ms</div>
+              <div class="node-tag">Grandmaster</div>
+            </div>
+            <div class="ts-key">
+              <h5>Master HW timestamps</h5>
+              <div class="ts-key-row"><span class="sym t-sy">t₁</span><span id="mkT1desc">preciseOriginTimestamp — Sync egress</span></div>
+              <div class="ts-key-row pd-only"><span class="sym t-pd">t₂</span><span>Pdelay_Req ingress</span></div>
+              <div class="ts-key-row pd-only"><span class="sym t-pd">t₃</span><span>Pdelay_Resp egress</span></div>
+              <div class="ts-key-row"><span class="sym t-c">c</span><span>correctionField — residence time</span></div>
+            </div>
+          </div>
+
+          <!-- Link diagram (timestamps annotated on arrows) + derived results -->
+          <div class="sync-col sync-link">
+            <div class="link">
+              <canvas id="linkCanvas" width="760" height="260"></canvas>
+              <div class="link-label" id="linkLabel">IEEE 802.1AS gPTP · two-step <span class="who">— t₁…t₄ shown at the arrow endpoint that captures them</span></div>
+              <div class="frame-legend" id="frameLegend">
+                <span data-lane="Sync"><i class="fr fr-sync"></i>Sync</span>
+                <span data-lane="Follow_Up"><i class="fr fr-fup"></i>Follow_Up</span>
+                <span data-lane="Pdelay_Req"><i class="fr fr-preq"></i>Pdelay_Req</span>
+                <span data-lane="Pdelay_Resp"><i class="fr fr-presp"></i>Pdelay_Resp</span>
+                <span data-lane="Pdelay_Resp_Follow_Up"><i class="fr fr-prfup"></i>Pdelay_Resp_Follow_Up</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Slave node -->
+          <div class="sync-col sync-slave">
+            <div class="node node-slave" id="nodeSlave">
+              <div class="node-icon">📡</div>
+              <div class="node-name node-name-row">Slave <span class="node-tag node-tag-inline state-unsync" id="slaveState">UNSYNCHRONIZED</span></div>
+              <div class="node-clock" id="slaveHuman">--:--:--.---</div>
+              <div class="node-raw" id="slaveRaw">0 ms</div>
+              <div class="stbm-box">
+                <div class="stbm-row"><span>STBM sync time</span><span id="stbmTime" class="mono">—</span></div>
+                <div class="stbm-row"><span>HW RX timestamp</span><span id="stbmHwTs" class="mono">—</span></div>
+                <div class="stbm-row"><span>Poll notify delay</span><span id="stbmNotify" class="mono">—</span></div>
+                <div class="stbm-row"><span>timeLeap status</span><span id="stbmLeap" class="mono">—</span></div>
+              </div>
+            </div>
+            <div class="ts-key">
+              <h5>Slave HW timestamps</h5>
+              <div class="ts-key-row pd-only"><span class="sym t-pd">t₁</span><span>Pdelay_Req egress</span></div>
+              <div class="ts-key-row"><span class="sym t-sy">t₂</span><span>Sync ingress — MAC HW ts</span></div>
+              <div class="ts-key-row pd-only"><span class="sym t-pd">t₄</span><span>Pdelay_Resp ingress</span></div>
+              <div class="ts-key-row"><span class="sym t-dp">Δp</span><span>poll notify delay — RX poll + bus load</span></div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <div class="main-row">
+    <!-- ================= CONFIG SIDEBAR ================= -->
+    <aside class="panel config-panel">
+      <h2>Configuration</h2>
+      <div class="config-grid">
+      <fieldset>
+        <legend>Master clock</legend>
+        <label title="Master oscillator frequency. Nominal reference is 1000 kHz (1 MHz). The derived ppm shows its offset from nominal. This sets the SLOPE of the master timer-count line; the master is the grandmaster reference all others sync to.">Clock frequency <span class="unit">(kHz)</span>
+          <input type="number" id="cfgMasterFreq" value="1000" step="0.1" min="1" />
+          <output id="outMasterPpm" class="ppm-out">0 ppm</output>
+        </label>
+        <label title="How often the master sends Sync + Follow_Up frames. Shorter interval = more frequent corrections = tighter tracking of the slave, but more bus traffic. Also sets the default time-axis grid spacing.">Sync / Follow_Up interval <span class="unit">(ms)</span>
+          <input type="number" id="cfgSyncInterval" value="125" step="5" min="5" />
+        </label>
+        <label title="Deliberate offset added to the master's transmitted time (preciseOriginTimestamp). Simulates a commanded time-base shift. A large shift produces a big correction at the slave and can trigger an STBM timeLeap.">Commanded time shift <span class="unit">(ms, vs master)</span>
+          <input type="number" id="cfgTimeShift" value="0" step="1" />
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Slave internal clock</legend>
+        <label title="Slave oscillator frequency. Difference from the master (nominal 1000 kHz) is the root cause of drift: e.g. 998 kHz = -2000 ppm, so the slave loses ~2 ms every second between syncs. Sets the slope of the slave timer-count line.">Clock frequency <span class="unit">(kHz)</span>
+          <input type="number" id="cfgSlaveFreq" value="998" step="0.1" min="1" />
+          <output id="outSlavePpm" class="ppm-out">0 ppm</output>
+        </label>
+        <label title="Short-term random frequency wander of the slave oscillator, as a percentage. Models crystal instability. Requirement is ≤ 0.1%; above that an alert fires. Higher values add noise/jitter to the deviation between syncs.">Oscillator stability <span class="unit">(%, ≤ 0.1)</span>
+          <input type="number" id="cfgStability" value="0.05" step="0.01" min="0" />
+        </label>
+        <label title="Period of the slave's measurement cycle (e.g. sensor frame). Cycle-to-cycle jitter is measured against this; jitter ≥ 1 ms raises an alert. Represents the application task cadence driven by the synchronized time base.">Cycle time <span class="unit">(ms)</span>
+          <input type="number" id="cfgCycle" value="1000" step="100" min="10" />
+        </label>
+        <label class="chk" title="Stops the slave oscillator entirely (0 Hz). The local timer flat-lines while Sync frames still arrive, so every sync is rejected by the plausibility check until the sync-loss timeout forces re-adoption. Use to demonstrate holdover / sync loss.">
+          <input type="checkbox" id="cfgFreeze" />
+          Freeze slave clock <span class="unit">(stop oscillator)</span>
+        </label>
+        <label title="If no sync has been APPLIED for this long, the slave declares sync loss and reverts to UNSYNCHRONIZED, then unconditionally adopts the next Sync. 0 disables the timeout. Lower = recovers faster after rejected syncs.">Sync-loss timeout <span class="unit">(ms → revert to UNSYNC)</span>
+          <input type="number" id="cfgSyncTimeout" value="400" step="50" min="0" />
+        </label>
+        <label title="STBM raises a timeLeap status flag when a single applied correction is at least this large (a discontinuous jump of the time base). 0 disables it. Lower threshold = timeLeap fires on smaller jumps. Rejected syncs never raise it.">STBM time-leap threshold <span class="unit">(ms, |correction| ≥ → timeLeap)</span>
+          <input type="number" id="cfgTimeLeap" value="5" step="1" min="0" />
+        </label>
+        <label class="chk" title="When checked, every received sync is applied regardless of size. When unchecked, a sync is rejected (holdover) if the deviation exceeds 6.25% of the time since the last sync — the plausibility gate that guards against bad timestamps.">
+          <input type="checkbox" id="cfgAcceptAll" checked />
+          Accept all syncs <span class="unit">(disable 6.25% reject)</span>
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>gPTP link</legend>
+        <label title="Required synchronization accuracy. If the |deviation| between slave and master exceeds this, an ACCURACY OUT OF SPEC alert fires and the tile turns red. Sets the ± band drawn on the deviation plot. Does not change the physics — it is the pass/fail limit.">Target accuracy <span class="unit">(µs)</span>
+          <input type="number" id="cfgAccuracy" value="500" step="10" />
+        </label>
+        <label title="How often the peer-delay (Pdelay) handshake runs to measure link propagation delay. More frequent = fresher meanPathDelay used in the offset calculation. Rarely needs changing on a stable link.">Pdelay interval <span class="unit">(ms)</span>
+          <input type="number" id="cfgPdelay" value="1000" step="100" min="50" />
+        </label>
+        <label title="Assumed static link propagation delay used when the Pdelay handshake is disabled. The link still has this real one-way delay in the Sync ingress timestamp, but with Pdelay off it is not measured or compensated, so it leaks into the recovered offset as a fixed error.">Static path delay <span class="unit">(µs, Pdelay off)</span>
+          <input type="number" id="cfgStaticPath" value="200" step="10" min="0" />
+        </label>
+        <label title="Random ± timestamping error on each Sync (PHY/MAC granularity, cabling). Directly adds noise to the measured offset, widening the scatter on the deviation plot. Higher noise makes it harder to stay within target accuracy.">Residual link noise <span class="unit">(µs, ±)</span>
+          <input type="number" id="cfgNoise" value="150" step="10" min="0" />
+        </label>
+        <label title="Random ± variation in Sync frame arrival time. Models delivery jitter of the gPTP messages. Affects the timing regularity of corrections but, with HW timestamping, not their measured value.">Sync arrival jitter <span class="unit">(ms, ±)</span>
+          <input type="number" id="cfgSyncJitter" value="0.3" step="0.1" min="0" />
+        </label>
+        <label title="Visual-only: how fast the animated frames travel across the link diagram. Pure display cosmetic — has no effect on the simulated timestamps, offsets, or timing.">Frame animation speed
+          <input type="range" id="cfgFrameSpeed" min="0.15" max="3" step="0.05" value="0.4" />
+          <output id="outFrameSpeed">0.40×</output>
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Slave Eth RX (polling)</legend>
+        <label class="chk" title="When ON, the Sync ingress time (t2) is captured accurately by the MAC in hardware, so the variable software poll/bus delay does NOT corrupt the measured offset. When OFF, a software timestamp is taken at poll-service time, leaking the poll notify delay into t2 as error + jitter.">
+          <input type="checkbox" id="cfgHwTs" checked />
+          Ethernet HW timestamping
+        </label>
+        <label title="How often the driver polls the Ethernet RX for received frames. A frame can wait up to one poll period before being processed, adding a variable notify delay. Larger period = more latency/jitter (and, without HW timestamping, more offset error).">RX polling period <span class="unit">(ms)</span>
+          <input type="number" id="cfgPollPeriod" value="5" step="1" min="0" />
+        </label>
+        <label title="Fraction of bus/CPU busy time causing contention when servicing a received Sync. Scales the extra random processing delay. Higher load = larger, more variable notify delay (matters most when HW timestamping is OFF).">Bus traffic load <span class="unit">(%)</span>
+          <input type="range" id="cfgBusLoad" min="0" max="100" step="5" value="40" />
+          <output id="outBusLoad">40%</output>
+        </label>
+        <label title="Upper bound of the contention delay added by bus traffic. Together with Bus traffic load it caps the worst-case poll notify delay. Raising it increases holdover/jitter risk when software timestamping is used.">Max contention delay <span class="unit">(ms)</span>
+          <input type="number" id="cfgBusMax" value="4" step="0.5" min="0" />
+        </label>
+      </fieldset>
+      </div>
+    </aside>
+
+    <!-- ================= WORKSPACE (stage + log) ================= -->
+    <div class="workspace">
+    <!-- ================= MAIN STAGE ================= -->
+    <section class="stage">
+      <!-- Timestamp chart (with embedded log) + status tiles (1x5, right) -->
+      <div class="timer-row">
+      <!-- Timestamp / counting-up timers (with embedded event log) -->
+      <div class="panel graph-panel">
+        <div class="graph-header">
+          <h2>Timestamp values — master &amp; slave timers counting up</h2>
+          <div class="zoom-bar">
+            <span class="zoom-label">Time view:</span>
+            <button id="btnZoomOut" class="btn btn-mini" title="Zoom out (show more time)">– zoom out</button>
+            <output id="outZoom" class="zoom-out">4.0 s</output>
+            <button id="btnZoomIn" class="btn btn-mini" title="Zoom in (show less time)">zoom in +</button>
+          </div>
+          <div class="legend">
+            <span><i class="sw sw-master"></i>master timer</span>
+            <span><i class="sw sw-slave"></i>slave timer</span>
+            <span><i class="sw sw-rx"></i>received master ts (Sync/Follow_Up)</span>
+            <span><i class="sw sw-ok"></i>sync applied</span>
+            <span><i class="sw sw-rej"></i>sync rejected</span>
+          </div>
+        </div>
+        <canvas id="timerCanvas" width="900" height="300"></canvas>
+        <!-- Event log embedded below the chart -->
+        <div class="log-embed">
+          <div class="log-head"><h2>Event log</h2></div>
+          <div class="log log-strip" id="log"></div>
+        </div>
+      </div>
+
+      <!-- ================= SLAVE CALCULATION (beside the chart) ================= -->
+      <div class="panel calc-panel-side">
+        <div class="calc-block calc-slave">
+          <h4>Slave calculation <span class="at" id="syAt"></span></h4>
+
+          <div class="calc-sub" id="pdBlockHead">① Peer path delay <span class="who">(slave-computed)</span> <span class="at" id="pdAt"></span></div>
+          <div class="calc-line" id="pdBlock">
+            <div class="formula"><span class="t-mpd">δ</span> meanPathDelay = ((<span class="t-pd">t₄</span> − <span class="t-pd">t₁</span>) − (<span class="t-pd">t₃</span> − <span class="t-pd">t₂</span>)) / 2</div>
+            <div class="calc-vals" id="pdVals">—</div>
+            <div class="result" id="pdResult">—</div>
+          </div>
+
+          <div class="calc-sub">② Offset from master</div>
+          <div class="calc-line">
+            <div class="formula">offsetFromMaster = <span class="t-sy">t₂</span> − <span class="t-sy">t₁</span><span id="fDelta"> − <span class="t-mpd">δ</span></span> − <span class="t-c">c</span> − <span class="t-dp">Δp</span></div>
+            <div class="calc-vals" id="syVals">—</div>
+            <div class="result" id="syResult">—</div>
+          </div>
+          <div class="result sub" id="syCorrection">—</div>
+          <div class="verdict" id="syVerdict">—</div>
+        </div>
+      </div>
+
+      <!-- ================= STATUS TILES (right, 1x5) ================= -->
+      <div class="tiles tiles-col">
+        <div class="tile">
+          <span class="tile-label">Deviation (slave − master)</span>
+          <span class="tile-value" id="statDev">0.000 ms</span>
+          <span class="tile-sub" id="statDevBar"></span>
+        </div>
+        <div class="tile">
+          <span class="tile-label">gPTP accuracy (±500 µs)</span>
+          <span class="tile-value" id="statAcc">—</span>
+          <span class="tile-sub" id="statAccSub">within target</span>
+        </div>
+        <div class="tile">
+          <span class="tile-label">Plausibility window (6.25%)</span>
+          <span class="tile-value" id="statWindow">—</span>
+          <span class="tile-sub" id="statWindowSub">since last sync</span>
+        </div>
+        <div class="tile">
+          <span class="tile-label">Cycle-to-cycle jitter</span>
+          <span class="tile-value" id="statJitter">0.000 ms</span>
+          <span class="tile-sub">limit &lt; 1 ms</span>
+        </div>
+        <div class="tile">
+          <span class="tile-label">Sim time</span>
+          <span class="tile-value" id="statSimTime">0 ms</span>
+          <span class="tile-sub" id="statSyncCount">0 syncs</span>
+        </div>
+      </div>
+      </div>
+
+      <!-- Alerts strip -->
+      <div class="alerts" id="alerts"></div>
+
+      <!-- Deviation graph -->
+      <div class="panel graph-panel">
+        <div class="graph-header">
+          <h2>Clock deviation over time</h2>
+          <div class="legend">
+            <span><i class="sw sw-dev"></i>slave − master</span>
+            <span><i class="sw sw-acc"></i>±500 µs accuracy</span>
+            <span><i class="sw sw-env"></i>6.25% plausibility envelope</span>
+            <span><i class="sw sw-ok"></i>sync applied</span>
+            <span><i class="sw sw-rej"></i>sync rejected</span>
+          </div>
+        </div>
+        <canvas id="graphCanvas" width="900" height="300"></canvas>
+      </div>
+
+      <!-- Timer counts graph -->
+      <div class="panel graph-panel">
+        <div class="graph-header">
+          <h2>Timer counts (oscillator ticks) — slope = clock frequency</h2>
+          <div class="legend">
+            <span><i class="sw sw-master"></i>master timer count</span>
+            <span><i class="sw sw-slave"></i>slave timer count</span>
+            <span class="legend-note">same frequency → same slope</span>
+          </div>
+        </div>
+        <canvas id="clockCanvas" width="900" height="300"></canvas>
+      </div>
+    </section>
+    </div>
+    </div>
+  </main>
+
+  <footer class="app-footer">
+    <div class="footer-inner">
+      <div class="footer-credit">
+        <span class="footer-by">Created by <strong>Ritesh Udupa</strong></span>
+        <span class="footer-role">Systems &amp; Software Architecture &middot; Safety-Critical &amp; Real-Time Systems &middot; ADAS/Autonomy</span>
+      </div>
+      <div class="footer-links">
+        <a href="https://www.linkedin.com/in/ritesh-udupa-4b694619/" target="_blank" rel="noopener">LinkedIn</a>
+        <a href="https://github.com/rudupa" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/rudupa/EthTimeSync" target="_blank" rel="noopener">Repository</a>
+        <a href="docs.html">Documentation</a>
+      </div>
+    </div>
+    <div class="footer-meta">
+      <span>&copy; <span id="footerYear">2026</span> Ritesh Udupa</span>
+      <span class="footer-dot">&middot;</span>
+      <span>gPTP / STBM Time Synchronization Visualizer</span>
+      <span class="footer-dot">&middot;</span>
+      <span>Built with vanilla JS &amp; HTML5 Canvas</span>
+      <span class="footer-dot">&middot;</span>
+      <span>MIT License</span>
+    </div>
+  </footer>
+
+  <script src="sim.js"></script>
+  <script>document.getElementById('footerYear').textContent = new Date().getFullYear();</script>
+</body>
+</html>

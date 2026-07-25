@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>How gPTP / STBM Time Synchronization Works</title>
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    /* ---------------- Docs-page specific layout ---------------- */
+    .docs {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 24px 28px 80px;
+      line-height: 1.65;
+    }
+    .docs h2 {
+      margin: 40px 0 10px;
+      font-size: 22px;
+      color: var(--text);
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 6px;
+    }
+    .docs h3 { margin: 26px 0 8px; font-size: 16.5px; color: var(--accent); }
+    .docs h4 { margin: 18px 0 6px; font-size: 14px; color: var(--text); }
+    .docs p { margin: 8px 0; color: var(--text); }
+    .docs ul, .docs ol { margin: 8px 0 8px 4px; padding-left: 22px; color: var(--text); }
+    .docs li { margin: 5px 0; }
+    .docs .lead { color: var(--muted); font-size: 14px; }
+    .docs code, .docs .mono { font-family: Consolas, monospace; }
+    .docs code {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-size: 12.5px;
+      color: #cdd9e5;
+    }
+    .docs .eq {
+      display: block;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      border-radius: 6px;
+      padding: 10px 14px;
+      margin: 12px 0;
+      font-family: Consolas, monospace;
+      font-size: 13.5px;
+      color: #e6edf3;
+      overflow-x: auto;
+    }
+    .docs .callout {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--warn);
+      border-radius: 6px;
+      padding: 10px 14px;
+      margin: 14px 0;
+      color: var(--text);
+    }
+    .docs .callout.info { border-left-color: var(--accent); }
+    .docs .callout.good { border-left-color: var(--ok); }
+    .docs .callout.bad { border-left-color: var(--danger); }
+    .docs .callout .lbl { font-weight: 700; display: block; margin-bottom: 3px; }
+
+    /* Terminology glossary */
+    .glossary { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin: 14px 0; }
+    .glossary .term {
+      display: grid;
+      grid-template-columns: 130px 1fr;
+      gap: 12px;
+      padding: 9px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    .glossary .term:last-child { border-bottom: none; }
+    .glossary .term:nth-child(odd) { background: var(--panel); }
+    .glossary .sym { font-family: Consolas, monospace; font-weight: 700; }
+    .glossary .def { color: var(--muted); font-size: 13px; }
+
+    /* Comparison table */
+    .cmp { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13px; }
+    .cmp th, .cmp td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+    .cmp th { background: var(--panel-2); color: var(--text); }
+    .cmp td { color: var(--muted); }
+    .cmp caption { text-align: left; color: var(--text); font-weight: 600; margin-bottom: 6px; }
+
+    /* Worked example block */
+    .example {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin: 14px 0;
+    }
+    .example h4 { margin-top: 0; color: var(--slave); }
+    .example .step { margin: 6px 0; font-family: Consolas, monospace; font-size: 12.5px; color: #cdd9e5; }
+    .example .res { color: var(--ok); font-weight: 700; }
+
+    /* Sequence diagram (pure CSS/SVG friendly) */
+    .seq { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 14px 0; }
+    .seq svg { width: 100%; height: auto; display: block; }
+
+    /* Colored symbol chips matching the simulator */
+    .t-sy { color: #a371f7; } .t-pd { color: #58a6ff; } .t-mpd { color: #3fb950; }
+    .t-c { color: #d29922; } .t-dp { color: #f85149; }
+
+    .docs .toc {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 18px;
+      margin: 18px 0;
+      columns: 2;
+      column-gap: 30px;
+    }
+    .docs .toc a { color: var(--accent); text-decoration: none; display: block; padding: 3px 0; }
+    .docs .toc a:hover { text-decoration: underline; }
+
+    .back-link {
+      display: inline-flex; align-items: center; gap: 6px;
+      color: var(--accent); text-decoration: none; font-size: 13px;
+      border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px;
+      background: var(--panel-2);
+    }
+    .back-link:hover { border-color: var(--accent); }
+    @media (max-width: 720px) { .docs .toc { columns: 1; } .glossary .term { grid-template-columns: 90px 1fr; } }
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <div class="title-block">
+      <h1><a href="index.html" class="title-link" title="Back to the interactive simulator">gPTP&nbsp;/&nbsp;STBM Time Synchronization</a></h1>
+      <p class="subtitle">Detailed explanation &middot; IEEE&nbsp;802.1AS gPTP &middot; IEEE&nbsp;1588 PTP &middot; AUTOSAR Synchronized Time-Base Manager</p>
+    </div>
+    <div class="sim-controls">
+      <a href="index.html" class="back-link">&larr; Back to simulator</a>
+    </div>
+  </header>
+
+  <main class="docs">
+    <p class="lead">
+      This page explains how time is synchronized from a grandmaster clock to a slave device over
+      Automotive/TSN Ethernet using <strong>gPTP</strong> (generalized Precision Time Protocol,
+      IEEE&nbsp;802.1AS) and how the <strong>STBM</strong> (Synchronized Time-Base Manager) in
+      AUTOSAR consumes that time. It walks through every timestamp and every configuration option
+      exposed by the simulator: <strong>1-step vs 2-step</strong>, <strong>hardware vs software
+      timestamping</strong>, and <strong>with vs without the Pdelay handshake</strong> — each with
+      worked numeric examples.
+    </p>
+
+    <nav class="toc">
+      <a href="#roles">1. Roles &amp; the big picture</a>
+      <a href="#glossary">2. Terminology (every symbol)</a>
+      <a href="#offset">3. The core offset calculation</a>
+      <a href="#pdelay">4. Peer path delay (Pdelay)</a>
+      <a href="#steps">5. One-step vs two-step</a>
+      <a href="#timestamp">6. HW vs SW timestamping</a>
+      <a href="#nopdelay">7. With vs without Pdelay</a>
+      <a href="#stbm">8. What the STBM does</a>
+      <a href="#epoch">9. The epoch value</a>
+      <a href="#example">10. Full worked example</a>
+      <a href="#cheatsheet">11. Cheat sheet</a>
+      <a href="#references">12. Standards &amp; references</a>
+    </nav>
+
+    <!-- ================================================================ -->
+    <h2 id="roles">1. Roles &amp; the big picture</h2>
+    <p>
+      A time-synchronized network has one authoritative clock and one or more devices that follow it:
+    </p>
+    <ul>
+      <li><strong>Grandmaster / Domain Master</strong> — owns the reference time for the domain.
+        Every other clock steers itself toward the master. Selected by the Best Master Clock Algorithm
+        (BMCA); in the simulator the master is fixed as the grandmaster.</li>
+      <li><strong>Slave</strong> — a device (e.g. an ECU) whose local oscillator drifts and must be
+        continuously corrected to match the master.</li>
+      <li><strong>gPTP (IEEE&nbsp;802.1AS)</strong> — the profile of IEEE&nbsp;1588 PTP used in
+        automotive/TSN. It defines the <em>Sync</em>, <em>Follow_Up</em> and <em>Pdelay</em> messages
+        that carry the timestamps used to compute the offset.</li>
+      <li><strong>STBM (Synchronized Time-Base Manager)</strong> — an AUTOSAR software module. It takes
+        the corrected gPTP time, maintains one or more <em>synchronized time bases</em>, applies
+        plausibility checks, handles holdover, and notifies applications of time jumps
+        (<em>timeLeap</em>).</li>
+    </ul>
+    <p>Two independent measurements combine to synchronize the slave:</p>
+    <ol>
+      <li><strong>Offset measurement</strong> (Sync / Follow_Up): "How far ahead/behind the master am I <em>right now</em>?"</li>
+      <li><strong>Path-delay measurement</strong> (Pdelay handshake): "How long does a frame take to travel the cable between us?"</li>
+    </ol>
+    <p>
+      The path delay is subtracted from the offset measurement because the Sync message itself takes
+      time to arrive — without removing it, the slave would always think it is <em>late</em> by exactly
+      the propagation delay.
+    </p>
+
+    <!-- ================================================================ -->
+    <h2 id="glossary">2. Terminology — every symbol used</h2>
+    <div class="glossary">
+      <div class="term"><span class="sym t-sy">t₁</span><span class="def"><strong>preciseOriginTimestamp</strong>. The moment the master <em>transmits</em> the Sync frame (master egress). Carried in the Sync frame (1-step) or the Follow_Up (2-step).</span></div>
+      <div class="term"><span class="sym t-sy">t₂</span><span class="def"><strong>Sync ingress timestamp</strong>. The moment the Sync frame <em>arrives</em> at the slave (slave receive). Captured by the slave's MAC (HW) or software (SW).</span></div>
+      <div class="term"><span class="sym t-mpd">δ</span><span class="def"><strong>meanPathDelay</strong>. One-way propagation delay of the link, measured by the Pdelay handshake. Subtracted from the offset.</span></div>
+      <div class="term"><span class="sym t-c">c</span><span class="def"><strong>correctionField</strong>. Residence + link corrections accumulated by transparent/bridge clocks as the Sync passes through them. In this simulator it models the master's residence time.</span></div>
+      <div class="term"><span class="sym t-dp">Δp</span><span class="def"><strong>poll / notify delay</strong>. The software RX processing delay at the slave — how long between the frame hitting the port and the STBM actually reading it (Ethernet driver poll period + bus contention). Only corrupts the result under SW timestamping.</span></div>
+      <div class="term"><span class="sym">offset</span><span class="def"><strong>offsetFromMaster</strong>. How far the slave clock is ahead of the master. The value the slave subtracts from its clock to synchronize.</span></div>
+      <div class="term"><span class="sym">Sync</span><span class="def">gPTP event message carrying (1-step) or announcing (2-step) t₁.</span></div>
+      <div class="term"><span class="sym">Follow_Up</span><span class="def">gPTP general message (2-step only) carrying the precise t₁ and correctionField measured at Sync egress.</span></div>
+      <div class="term"><span class="sym">Pdelay_Req</span><span class="def">Peer-delay request sent by the slave to start a link-delay measurement.</span></div>
+      <div class="term"><span class="sym">Pdelay_Resp</span><span class="def">Peer-delay response (+ optional Follow_Up) returned by the master, carrying its RX/TX timestamps.</span></div>
+      <div class="term"><span class="sym">residence</span><span class="def">Time a message spends inside a device (bridge/switch) between ingress and egress; folded into the correctionField c.</span></div>
+      <div class="term"><span class="sym">holdover</span><span class="def">State where the slave keeps running on its own oscillator because incoming syncs failed a plausibility check or stopped arriving.</span></div>
+      <div class="term"><span class="sym">timeLeap</span><span class="def">STBM flag raised when a single correction is large enough to be a discontinuous "jump" of the time base (≥ configured threshold).</span></div>
+      <div class="term"><span class="sym">ppm</span><span class="def">Parts per million — the frequency error (drift rate) of an oscillator. 1 ppm ≈ 1 µs of drift every second.</span></div>
+    </div>
+
+    <!-- ================================================================ -->
+    <h2 id="offset">3. The core offset calculation</h2>
+    <p>
+      All of gPTP boils down to one equation the slave evaluates every Sync interval. Given the four
+      quantities above:
+    </p>
+    <span class="eq">offsetFromMaster = <span class="t-sy">t₂</span> − <span class="t-sy">t₁</span> − <span class="t-mpd">δ</span> − <span class="t-c">c</span></span>
+    <p>Intuition, term by term:</p>
+    <ul>
+      <li><code><span class="t-sy">t₂</span> − <span class="t-sy">t₁</span></code> — the apparent transit: slave-receive time minus master-send time. If the two clocks agreed perfectly this would equal just the wire delay.</li>
+      <li><code>− <span class="t-mpd">δ</span></code> — remove the wire propagation delay (the Sync was "old" by δ when it arrived).</li>
+      <li><code>− <span class="t-c">c</span></code> — remove residence/bridge delays that the network added to the frame.</li>
+    </ul>
+    <p>Whatever is left is the genuine clock error. The slave then corrects itself:</p>
+    <span class="eq">slaveClock := slaveClock − offsetFromMaster</span>
+    <p>
+      A positive offset means the slave is <em>ahead</em> of the master, so it steps its clock back; a
+      negative offset means it is behind, so it steps forward.
+    </p>
+
+    <div class="callout info">
+      <span class="lbl">Which timestamp belongs to whom?</span>
+      <span class="t-sy">t₁</span> is a <strong>master</strong> timestamp (Sync egress at the master) — this is why, in the simulator,
+      t₁ appears on the master side the instant the Sync frame departs. <span class="t-sy">t₂</span> is the
+      <strong>slave</strong> timestamp (Sync ingress). The offset can only be finalized once <em>both</em>
+      have been captured — and in 2-step mode, once the Follow_Up delivers the precise t₁ and c.
+    </div>
+
+    <!-- ================================================================ -->
+    <h2 id="pdelay">4. Peer path delay (the Pdelay handshake)</h2>
+    <p>
+      To measure δ, the slave and master exchange a small four-timestamp handshake. Note these
+      t₁…t₄ are a <em>different set</em> from the Sync t₁/t₂ above — they belong only to the Pdelay
+      exchange:
+    </p>
+    <div class="glossary">
+      <div class="term"><span class="sym t-pd">t₁</span><span class="def">Pdelay_Req <strong>egress</strong> at the slave (requester sends).</span></div>
+      <div class="term"><span class="sym t-pd">t₂</span><span class="def">Pdelay_Req <strong>ingress</strong> at the master (responder receives).</span></div>
+      <div class="term"><span class="sym t-pd">t₃</span><span class="def">Pdelay_Resp <strong>egress</strong> at the master (responder sends back).</span></div>
+      <div class="term"><span class="sym t-pd">t₄</span><span class="def">Pdelay_Resp <strong>ingress</strong> at the slave (requester receives).</span></div>
+    </div>
+    <p>The one-way delay is the round trip minus the master's turnaround time, halved:</p>
+    <span class="eq"><span class="t-mpd">δ</span> = ((<span class="t-pd">t₄</span> − <span class="t-pd">t₁</span>) − (<span class="t-pd">t₃</span> − <span class="t-pd">t₂</span>)) / 2</span>
+    <ul>
+      <li><code>(<span class="t-pd">t₄</span> − <span class="t-pd">t₁</span>)</code> is the total round-trip time as seen by the slave clock.</li>
+      <li><code>(<span class="t-pd">t₃</span> − <span class="t-pd">t₂</span>)</code> is the time the request "sat" inside the master (its turnaround).</li>
+      <li>Subtracting removes the processing time, leaving pure cable time; dividing by two gives one direction.</li>
+    </ul>
+    <div class="callout info">
+      <span class="lbl">Why halving works</span>
+      The subtraction cancels the slave↔master <em>clock offset</em> entirely (it appears with opposite
+      signs on the two legs), so δ is measured correctly <em>even before the clocks are synchronized</em>.
+      That is why Pdelay can run independently of, and before, the Sync offset correction.
+    </div>
+
+    <div class="example">
+      <h4>Example — measuring δ</h4>
+      <div class="step">t₁ = 1000.000 µs   (req sent by slave)</div>
+      <div class="step">t₂ = 1000.500 µs   (req arrives at master)</div>
+      <div class="step">t₃ = 1010.500 µs   (master replies 10 µs later)</div>
+      <div class="step">t₄ = 1011.000 µs   (reply arrives at slave)</div>
+      <div class="step">round trip = t₄ − t₁ = 11.000 µs</div>
+      <div class="step">turnaround = t₃ − t₂ = 10.000 µs</div>
+      <div class="step res">δ = (11.000 − 10.000) / 2 = 0.500 µs</div>
+    </div>
+
+    <!-- ================================================================ -->
+    <h2 id="steps">5. One-step vs two-step timestamping</h2>
+    <p>
+      The master must place its exact transmit time (t₁) into the message. But at the instant the hardware
+      starts sending the Sync, it does not yet know the final egress timestamp. There are two ways to
+      solve this:
+    </p>
+    <table class="cmp">
+      <caption>Sync delivery of t₁</caption>
+      <tr><th>Aspect</th><th>2-step</th><th>1-step</th></tr>
+      <tr><td>Messages</td><td><code>Sync</code> then <code>Follow_Up</code></td><td><code>Sync</code> only</td></tr>
+      <tr><td>Where t₁ &amp; c live</td><td>In the <strong>Follow_Up</strong>, measured precisely at Sync egress</td><td>Inserted into the <strong>Sync</strong> frame on the fly by hardware</td></tr>
+      <tr><td>HW requirement</td><td>Lower — just needs an egress timestamp readback</td><td>Higher — MAC must rewrite the frame &amp; fix the FCS at line rate</td></tr>
+      <tr><td>Latency to result</td><td>Slightly higher (waits for the 2nd message)</td><td>Lower (everything in one frame)</td></tr>
+      <tr><td>In the simulator</td><td>Sync reveals t₁ &amp; t₂; Follow_Up reveals c &amp; Δp, then the offset is computed</td><td>Sync alone reveals t₁, t₂, c &amp; Δp</td></tr>
+    </table>
+    <div class="callout good">
+      <span class="lbl">Same math, different plumbing</span>
+      The offset equation is <em>identical</em> in both modes. The only difference is <strong>when</strong>
+      t₁ and c become available to the slave: in 2-step they arrive with the follow-up message; in 1-step
+      they are already inside the Sync frame. That is why the simulator finalizes the calculation on
+      Follow_Up arrival (2-step) vs on Sync arrival (1-step).
+    </div>
+
+    <!-- ================================================================ -->
+    <h2 id="timestamp">6. Hardware vs software timestamping</h2>
+    <p>
+      The accuracy of t₂ (Sync ingress) depends entirely on <em>where</em> the timestamp is captured
+      in the receive path:
+    </p>
+    <table class="cmp">
+      <caption>Capturing t₂ at the slave</caption>
+      <tr><th>Aspect</th><th>HW timestamping</th><th>SW timestamping</th></tr>
+      <tr><td>Capture point</td><td>In the <strong>MAC/PHY</strong> at the exact moment the frame crosses the wire</td><td>In the <strong>driver/stack</strong> when software gets around to reading the frame</td></tr>
+      <tr><td>Effect of poll delay Δp</td><td><strong>None</strong> on the value — Δp only delays <em>when</em> STBM is updated, not the timestamp itself</td><td><strong>Leaks directly into t₂</strong> as error + jitter</td></tr>
+      <tr><td>Offset equation</td><td><code>t₂ − t₁ − δ − c</code></td><td><code>t₂ − t₁ − δ − c</code> where t₂ is inflated by Δp → error ≈ Δp</td></tr>
+      <tr><td>Typical accuracy</td><td>Sub-microsecond</td><td>Tens of µs to milliseconds, jittery</td></tr>
+    </table>
+    <p>
+      In the simulator, the RX processing path is drawn as the dashed <span class="t-dp">Δp</span> leg
+      from the <strong>SLAVE PORT</strong> to the <strong>STBM</strong> calc point. With HW timestamping,
+      t₂ is latched at the port (start of that leg) so Δp is harmless. With SW timestamping, t₂ is
+      effectively taken at the end of the leg, so the whole Δp is added into the measured offset as error:
+    </p>
+    <span class="eq">SW:  offset = <span class="t-sy">t₂</span> − <span class="t-sy">t₁</span> − <span class="t-mpd">δ</span> − <span class="t-c">c</span> − <span class="t-dp">Δp</span>  (Δp is a correction the slave tries — but Δp is variable, so residual error &amp; jitter remain)</span>
+    <div class="callout bad">
+      <span class="lbl">Why SW timestamping hurts</span>
+      Δp is <strong>not constant</strong> — it depends on the driver poll period and momentary bus load.
+      Even if the slave subtracts an average Δp, the run-to-run variation shows up as sync jitter. HW
+      timestamping removes the variable entirely, which is why automotive TSN mandates MAC-level
+      timestamping for the tightest time bases.
+    </div>
+
+    <!-- ================================================================ -->
+    <h2 id="nopdelay">7. With vs without Pdelay</h2>
+    <p>
+      Pdelay is what supplies δ. What happens if it is disabled?
+    </p>
+    <table class="cmp">
+      <caption>Effect of the Pdelay handshake</caption>
+      <tr><th>Aspect</th><th>Pdelay ON</th><th>Pdelay OFF</th></tr>
+      <tr><td>δ source</td><td>Measured continuously from the 4-timestamp handshake</td><td>Assumed <strong>0</strong> (or a static configured value)</td></tr>
+      <tr><td>Offset equation</td><td><code>t₂ − t₁ − δ − c</code></td><td><code>t₂ − t₁ − c</code> (δ term dropped)</td></tr>
+      <tr><td>Residual error</td><td>≈ 0 from path delay</td><td>The <strong>entire link propagation delay stays uncompensated</strong> — the slave is offset by δ permanently</td></tr>
+      <tr><td>When acceptable</td><td>Always the correct choice for accuracy</td><td>Only for very short links where δ is negligible, or lab/demo setups</td></tr>
+    </table>
+    <div class="callout">
+      <span class="lbl">Concrete impact</span>
+      If the cable delay is 300&nbsp;ns and Pdelay is off, the slave will settle 300&nbsp;ns behind the master
+      forever — because it never learns the Sync frame was 300&nbsp;ns old on arrival. With Pdelay on, that
+      300&nbsp;ns is measured and removed. In the simulator, turning Pdelay off drops the <span class="t-mpd">δ</span>
+      term from the formula and prints a note that the static link delay is left uncompensated.
+    </div>
+
+    <!-- ================================================================ -->
+    <h2 id="stbm">8. What the STBM does with the corrected time</h2>
+    <p>
+      gPTP produces a corrected time; the STBM turns it into a robust, application-facing
+      <em>synchronized time base</em>. Its jobs:
+    </p>
+    <ul>
+      <li><strong>Rate + offset correction</strong> — applies the gPTP offset to the local time base.</li>
+      <li><strong>Plausibility check</strong> — a new sync is only accepted if the implied jump is
+        within a plausibility window (in the simulator, 6.25% of the time since the last valid sync).
+        Wild values are rejected to reject glitches/attacks.</li>
+      <li><strong>Holdover</strong> — if syncs stop arriving or keep failing the check, the STBM keeps
+        running on its own oscillator (flywheel) rather than following bad data. After a sync-loss
+        timeout it drops to UNSYNCHRONIZED and adopts the next Sync unconditionally.</li>
+      <li><strong>timeLeap notification</strong> — if an accepted correction is large enough to be a
+        discontinuity (≥ configured threshold), the STBM raises a <em>timeLeap</em> flag so applications
+        can react to the jump (forward or backward).</li>
+    </ul>
+    <div class="callout info">
+      <span class="lbl">Plausibility window example</span>
+      If the last good sync was 100&nbsp;ms ago, the window is 6.25%&nbsp;×&nbsp;100&nbsp;ms&nbsp;=&nbsp;±6.25&nbsp;ms.
+      An offset of 2&nbsp;ms is applied; an offset of 10&nbsp;ms is rejected → holdover.
+    </div>
+
+    <!-- ================================================================ -->
+    <h2 id="epoch">9. The epoch value — is a non-zero epoch a convention?</h2>
+    <p>
+      The simulator's <strong>Epoch</strong> field is essentially cosmetic, but it mirrors something real
+      about how PTP time is represented. Real PTP time is never zero-based from "simulation start" — the
+      timestamps are <strong>seconds/nanoseconds since a defined epoch</strong>, and that epoch is a large
+      fixed point in the past.
+    </p>
+
+    <h3>Standard epochs</h3>
+    <div class="glossary">
+      <div class="term"><span class="sym">PTP / 1588</span><span class="def"><strong>1&nbsp;January&nbsp;1970, 00:00:00 TAI</strong> (the "PTP epoch"). Time is counted as TAI (International Atomic Time), so it does <em>not</em> include leap seconds.</span></div>
+      <div class="term"><span class="sym">gPTP / 802.1AS</span><span class="def">Same 1970 TAI epoch for the grandmaster's <code>preciseOriginTimestamp</code>, though 802.1AS is often used as an <em>arbitrary / relative</em> timescale where the master just counts from power-on.</span></div>
+      <div class="term"><span class="sym">GPS time</span><span class="def">Different epoch: <strong>6&nbsp;January&nbsp;1980</strong>.</span></div>
+      <div class="term"><span class="sym">Unix time</span><span class="def">1970 <strong>UTC</strong> (with leap seconds), which is why PTP↔UTC differ by the current TAI−UTC offset (37&nbsp;s as of 2026).</span></div>
+    </div>
+
+    <h3>Why a non-zero epoch matters</h3>
+    <ol>
+      <li><strong>Realistic magnitude / wraparound testing.</strong> PTP seconds are a 48-bit field and
+        nanoseconds a 32-bit field. Today's TAI value is ~<strong>1.77&nbsp;×&nbsp;10⁹ seconds</strong> since
+        1970. Using a large epoch exercises the same high-order bits and 32-bit millisecond wrap that a real
+        device sees, instead of tiny near-zero numbers that never stress rollover.</li>
+      <li><strong>It's what the wire actually carries.</strong> A grandmaster transmits absolute timestamps,
+        not "ms since boot." A large value makes the display honest.</li>
+      <li><strong>Cosmetic only for accuracy.</strong> Epoch just shifts the absolute display; it does
+        <em>not</em> change offsets, δ, or accuracy — those are all <em>differences</em>, so the epoch cancels out.</li>
+    </ol>
+
+    <h3>Typical non-zero value</h3>
+    <p>To look like a real automotive/PTP clock, use <strong>current TAI seconds since 1970</strong>, in the simulator's millisecond unit:</p>
+    <ul>
+      <li>Seconds since 1970 (TAI) ≈ <strong>1.77&nbsp;×&nbsp;10⁹ s</strong> (mid-2026).</li>
+      <li>In milliseconds that is ≈ <strong>1.77&nbsp;×&nbsp;10¹² ms</strong> (e.g. <code>1771000000000</code>).</li>
+    </ul>
+    <p>Other realistic choices:</p>
+    <ul>
+      <li><strong>Power-on relative (802.1AS arbitrary)</strong> — start at <code>0</code> or a small value;
+        common for master-relative time bases where absolute wall-clock time is not needed.</li>
+      <li><strong>A "nice" large demo value</strong> — e.g. <code>1000000</code>&nbsp;ms (~16.7&nbsp;min), just
+        to show the clock isn't zero without being unwieldy.</li>
+    </ul>
+    <div class="callout info">
+      <span class="lbl">Bottom line</span>
+      A non-zero epoch is the norm because PTP timestamps are absolute (seconds since 1970 TAI). In this
+      simulator it only changes the displayed wall-clock magnitude — every offset and delay is a difference,
+      so accuracy is unaffected by whatever epoch you choose.
+    </div>
+
+    <!-- ================================================================ -->
+    <h2 id="example">10. Full worked example (2-step, HW, Pdelay on)</h2>
+    <div class="example">
+      <h4>Given</h4>
+      <div class="step">Pdelay result:      <span class="t-mpd">δ</span> = 0.300 µs = 0.000300 ms</div>
+      <div class="step">Master residence:   <span class="t-c">c</span> = 4.00 µs = 0.004000 ms</div>
+      <div class="step">Slave is running 2.000 ms ahead of the master (true offset)</div>
+      <div class="step">&nbsp;</div>
+      <h4>Sync exchange</h4>
+      <div class="step"><span class="t-sy">t₁</span> = 125.000000 ms   (master sends Sync — preciseOriginTimestamp)</div>
+      <div class="step"><span class="t-sy">t₂</span> = 127.004300 ms   (slave MAC latches ingress)</div>
+      <div class="step">&nbsp;</div>
+      <h4>Compute offset</h4>
+      <div class="step">offset = <span class="t-sy">t₂</span> − <span class="t-sy">t₁</span> − <span class="t-mpd">δ</span> − <span class="t-c">c</span></div>
+      <div class="step">       = 127.004300 − 125.000000 − 0.000300 − 0.004000</div>
+      <div class="step res">       = +2.000000 ms   → slave is 2 ms ahead</div>
+      <div class="step">&nbsp;</div>
+      <h4>Correct</h4>
+      <div class="step">slaveClock := slaveClock − 2.000000 ms   (step back)</div>
+      <div class="step">Plausibility (last sync 125 ms ago): window = 6.25% × 125 = ±7.81 ms</div>
+      <div class="step res">|2.0 ms| &lt; 7.81 ms → SYNC APPLIED ✓</div>
+    </div>
+    <p>Now compare the <strong>same scenario with SW timestamping</strong> and a poll delay Δp = 0.250&nbsp;ms:</p>
+    <div class="example">
+      <h4>SW timestamping — t₂ is taken 0.250 ms late</h4>
+      <div class="step"><span class="t-sy">t₂</span> = 127.254300 ms   (0.250 ms later than HW would)</div>
+      <div class="step">offset = 127.254300 − 125.000000 − 0.000300 − 0.004000</div>
+      <div class="step res">       = +2.250000 ms   → 0.250 ms of error injected by Δp</div>
+      <div class="step">Because Δp varies every cycle, this 0.25 ms also jitters run-to-run.</div>
+    </div>
+    <p>And the <strong>same scenario with Pdelay off</strong> (δ dropped):</p>
+    <div class="example">
+      <h4>Pdelay off — δ assumed 0</h4>
+      <div class="step">offset = <span class="t-sy">t₂</span> − <span class="t-sy">t₁</span> − <span class="t-c">c</span>   (no δ term)</div>
+      <div class="step">       = 127.004300 − 125.000000 − 0.004000</div>
+      <div class="step res">       = +2.000300 ms   → 0.300 µs of link delay left uncompensated forever</div>
+    </div>
+
+    <!-- ================================================================ -->
+    <h2 id="cheatsheet">11. Cheat sheet</h2>
+    <span class="eq">Offset (Sync):   offset = <span class="t-sy">t₂</span> − <span class="t-sy">t₁</span> − <span class="t-mpd">δ</span> − <span class="t-c">c</span></span>
+    <span class="eq">Path delay:      <span class="t-mpd">δ</span> = ((<span class="t-pd">t₄</span> − <span class="t-pd">t₁</span>) − (<span class="t-pd">t₃</span> − <span class="t-pd">t₂</span>)) / 2</span>
+    <span class="eq">Correction:      slaveClock := slaveClock − offset</span>
+    <ul>
+      <li><strong>2-step</strong>: t₁ &amp; c arrive in the Follow_Up → offset finalized on Follow_Up.</li>
+      <li><strong>1-step</strong>: t₁ &amp; c are inside the Sync → offset finalized on Sync.</li>
+      <li><strong>HW timestamp</strong>: t₂ latched at the port → Δp harmless.</li>
+      <li><strong>SW timestamp</strong>: t₂ taken after Δp → error + jitter ≈ Δp.</li>
+      <li><strong>Pdelay on</strong>: δ measured and removed → accurate.</li>
+      <li><strong>Pdelay off</strong>: δ = 0 → link delay uncompensated.</li>
+    </ul>
+
+    <!-- ================================================================ -->
+    <h2 id="references">12. Standards &amp; references</h2>
+    <p>
+      The behavior modeled here is defined across IEEE timing standards and the AUTOSAR
+      time-synchronization stack. The primary normative documents:
+    </p>
+
+    <h3>IEEE — gPTP &amp; PTP</h3>
+    <ul>
+      <li><strong>IEEE&nbsp;802.1AS-2020</strong> — <em>Timing and Synchronization for Time-Sensitive
+        Applications</em> (gPTP). Defines Sync, Follow_Up, and the peer-delay (Pdelay) mechanism, the
+        one-step/two-step behavior, and the gPTP profile of PTP used in TSN/automotive.
+        <a href="https://standards.ieee.org/ieee/802.1AS/7121/" target="_blank" rel="noopener">standards.ieee.org/ieee/802.1AS</a></li>
+      <li><strong>IEEE&nbsp;1588-2019</strong> — <em>Precision Clock Synchronization Protocol for Networked
+        Measurement and Control Systems</em> (PTP v2.1). The base standard defining timestamps
+        (t₁–t₄), correctionField, meanPathDelay, and the offset/delay equations.
+        <a href="https://standards.ieee.org/ieee/1588/6825/" target="_blank" rel="noopener">standards.ieee.org/ieee/1588</a></li>
+      <li><strong>IEEE&nbsp;802.1AS-2011</strong> — the original gPTP edition (superseded by the 2020
+        revision), still widely referenced in existing automotive designs.</li>
+    </ul>
+
+    <h3>AUTOSAR — Ethernet Time Synchronization &amp; STBM</h3>
+    <ul>
+      <li><strong>AUTOSAR SWS Synchronized Time-Base Manager (StbM)</strong> —
+        <em>Specification of Synchronized Time-Base Manager</em>. Defines the synchronized time bases,
+        rate/offset correction, time leap detection and thresholds, timeout/holdover handling, and the
+        customer/OS notification interfaces modeled on this page.
+        <a href="https://www.autosar.org/fileadmin/standards/R22-11/CP/AUTOSAR_SWS_SynchronizedTimeBaseManager.pdf" target="_blank" rel="noopener">AUTOSAR_SWS_SynchronizedTimeBaseManager.pdf</a></li>
+      <li><strong>AUTOSAR SWS Time Synchronization over Ethernet (EthTSyn)</strong> —
+        <em>Specification of Time Synchronization over Ethernet</em>. The AUTOSAR realization of gPTP:
+        Sync/Follow_Up/Pdelay message handling, one/two-step, hardware vs software timestamping via the
+        Ethernet driver, and correctionField processing.
+        <a href="https://www.autosar.org/fileadmin/standards/R22-11/CP/AUTOSAR_SWS_TimeSyncOverEthernet.pdf" target="_blank" rel="noopener">AUTOSAR_SWS_TimeSyncOverEthernet.pdf</a></li>
+      <li><strong>AUTOSAR PRS Time Synchronization Protocol</strong> —
+        <em>Protocol Requirements Specification: Time Sync Protocol</em>. The on-the-wire protocol
+        (message formats, sub-TLVs, status/user-data) shared by EthTSyn/CanTSyn/FrTSyn.
+        <a href="https://www.autosar.org/fileadmin/standards/R22-11/CP/AUTOSAR_PRS_TimeSyncProtocol.pdf" target="_blank" rel="noopener">AUTOSAR_PRS_TimeSyncProtocol.pdf</a></li>
+      <li><strong>AUTOSAR SWS Ethernet Driver (Eth)</strong> —
+        <em>Specification of Ethernet Driver</em>. Defines the hardware egress/ingress timestamping API
+        (<code>Eth_EnableEgressTimeStamp</code> / <code>Eth_GetIngressTimeStamp</code>) that makes MAC-level
+        (HW) timestamping possible.
+        <a href="https://www.autosar.org/fileadmin/standards/R22-11/CP/AUTOSAR_SWS_EthernetDriver.pdf" target="_blank" rel="noopener">AUTOSAR_SWS_EthernetDriver.pdf</a></li>
+      <li><strong>AUTOSAR EB / RS Time Synchronization</strong> —
+        <em>Requirements on Time Synchronization</em>. Higher-level requirements tying StbM, EthTSyn, and
+        the bus-specific TSyn modules together.
+        <a href="https://www.autosar.org/fileadmin/standards/R22-11/CP/AUTOSAR_RS_TimeSync.pdf" target="_blank" rel="noopener">AUTOSAR_RS_TimeSync.pdf</a></li>
+    </ul>
+
+    <h3>Supporting / background</h3>
+    <ul>
+      <li><strong>IEEE&nbsp;802.1AS timing model</strong> — background on residence time, transparent
+        clocks, and correctionField accumulation across bridges.</li>
+      <li><strong>TAI &amp; the PTP epoch</strong> — the 1&nbsp;January&nbsp;1970 TAI epoch and the TAI−UTC
+        offset (37&nbsp;s as of 2026) referenced in §9.
+        <a href="https://en.wikipedia.org/wiki/International_Atomic_Time" target="_blank" rel="noopener">International Atomic Time (TAI)</a></li>
+      <li><strong>IEEE&nbsp;802.1Q (TSN)</strong> — the broader Time-Sensitive Networking framework that
+        802.1AS provides the time base for.</li>
+    </ul>
+
+    <div class="callout">
+      <span class="lbl">Document versions</span>
+      Links above point to AUTOSAR Classic Platform R22-11 releases and the current IEEE standard pages;
+      exact clause numbers vary between AUTOSAR releases (R19-11 … R23-11) and between the 2011 and 2020
+      editions of 802.1AS. Always cross-check against the release your project targets. AUTOSAR
+      specifications are freely downloadable from
+      <a href="https://www.autosar.org/standards/classic-platform" target="_blank" rel="noopener">autosar.org</a>.
+    </div>
+
+    <p style="margin-top:24px;">
+      <a href="index.html" class="back-link">&larr; Back to the interactive simulator</a>
+    </p>
+  </main>
+
+  <footer class="app-footer">
+    <div class="footer-inner">
+      <div class="footer-credit">
+        <span class="footer-by">Created by <strong>Ritesh Udupa</strong></span>
+        <span class="footer-role">Systems &amp; Software Architecture &middot; Safety-Critical &amp; Real-Time Systems &middot; ADAS/Autonomy</span>
+      </div>
+      <div class="footer-links">
+        <a href="https://www.linkedin.com/in/ritesh-udupa-4b694619/" target="_blank" rel="noopener">LinkedIn</a>
+        <a href="https://github.com/rudupa" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/rudupa/EthTimeSync" target="_blank" rel="noopener">Repository</a>
+        <a href="index.html">Simulator</a>
+      </div>
+    </div>
+    <div class="footer-meta">
+      <span>&copy; <span id="footerYear">2026</span> Ritesh Udupa</span>
+      <span class="footer-dot">&middot;</span>
+      <span>gPTP / STBM Time Synchronization Visualizer</span>
+      <span class="footer-dot">&middot;</span>
+      <span>Built with vanilla JS &amp; HTML5 Canvas</span>
+      <span class="footer-dot">&middot;</span>
+      <span>MIT License</span>
+    </div>
+  </footer>
+  <script>document.getElementById('footerYear').textContent = new Date().getFullYear();</script>
+</body>
+</html>
