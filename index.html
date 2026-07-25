@@ -155,6 +155,12 @@
         <label title="Short-term random frequency wander of the slave oscillator, as a percentage. Models crystal instability. Requirement is ≤ 0.1%; above that an alert fires. Higher values add noise/jitter to the deviation between syncs.">Oscillator stability <span class="unit">(%, ≤ 0.1)</span>
           <input type="number" id="cfgStability" value="0.05" step="0.01" min="0" />
         </label>
+        <label title="How the slave applies each sync. Phase only: the classic hard step — the slave clock is snapped to the master every sync, so it drifts back (sawtooth) between syncs. Phase + frequency (servo): a PI clock servo also disciplines the oscillator RATE (syntonization) so the error converges and stays flat between syncs, like a real gPTP/STBM stack.">Correction mode
+          <select id="cfgCorrMode">
+            <option value="both" selected>Phase + frequency (servo)</option>
+            <option value="phase">Phase only (step)</option>
+          </select>
+        </label>
         <label title="Period of the slave's measurement cycle (e.g. sensor frame). Cycle-to-cycle jitter is measured against this; jitter ≥ 1 ms raises an alert. Represents the application task cadence driven by the synchronized time base.">Cycle time <span class="unit">(ms)</span>
           <input type="number" id="cfgCycle" value="1000" step="100" min="10" />
         </label>
@@ -293,6 +299,11 @@
           <span class="tile-label">Cycle-to-cycle jitter</span>
           <span class="tile-value" id="statJitter">0.000 ms</span>
           <span class="tile-sub">limit &lt; 1 ms</span>
+        </div>
+        <div class="tile">
+          <span class="tile-label">rateRatio (master / slave)</span>
+          <span class="tile-value" id="statRateRatio">—</span>
+          <span class="tile-sub" id="statRateRatioSub">frequency servo</span>
         </div>
         <div class="tile">
           <span class="tile-label">Sim time</span>

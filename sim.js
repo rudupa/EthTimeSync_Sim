@@ -28,6 +28,14 @@ const STABILITY_LIMIT = 0.1;          // % requirement
 const JITTER_LIMIT = 1.0;             // ms
 const ACCURACY_UNSYNC = Infinity;
 
+// Frequency-servo (syntonization) PI gains, used in "phase + frequency" mode.
+const SERVO_KP = 0.7;                 // proportional gain (fraction of implied freq error)
+const SERVO_KI = 0.3;                 // integral gain (builds the steady rate correction)
+const SERVO_CLAMP_PPM = 20000;        // max frequency correction magnitude (ppm)
+const LOCK_PPM = 25;                  // |residual freq error| below this ⇒ servo considered locked
+const LOCK_STREAK = 3;                // consecutive in-lock syncs required to latch LOCKED
+const clampPpm = (v) => Math.max(-SERVO_CLAMP_PPM, Math.min(SERVO_CLAMP_PPM, v));
+
 /* ---------------- DOM helpers ---------------- */
 const $ = (id) => document.getElementById(id);
 
@@ -37,7 +45,7 @@ const els = {
   cfgStop: $('cfgStop'), cfgSpeed: $('cfgSpeed'), outSpeed: $('outSpeed'),
   cfgStepMode: $('cfgStepMode'), cfgPdelayEn: $('cfgPdelayEn'), cfgTsMode: $('cfgTsMode'),
   cfgEpoch: $('cfgEpoch'), cfgMasterFreq: $('cfgMasterFreq'), outMasterPpm: $('outMasterPpm'), cfgSyncInterval: $('cfgSyncInterval'),
-  cfgTimeShift: $('cfgTimeShift'), cfgSlaveFreq: $('cfgSlaveFreq'), outSlavePpm: $('outSlavePpm'), cfgStability: $('cfgStability'),
+  cfgTimeShift: $('cfgTimeShift'), cfgSlaveFreq: $('cfgSlaveFreq'), outSlavePpm: $('outSlavePpm'), cfgStability: $('cfgStability'), cfgCorrMode: $('cfgCorrMode'),
   cfgCycle: $('cfgCycle'), cfgFreeze: $('cfgFreeze'), cfgSyncTimeout: $('cfgSyncTimeout'), cfgAcceptAll: $('cfgAcceptAll'), cfgAccuracy: $('cfgAccuracy'), cfgPdelay: $('cfgPdelay'), cfgStaticPath: $('cfgStaticPath'), cfgNoise: $('cfgNoise'), cfgSyncJitter: $('cfgSyncJitter'),
   cfgFrameSpeed: $('cfgFrameSpeed'), outFrameSpeed: $('outFrameSpeed'),
   btnZoomIn: $('btnZoomIn'), btnZoomOut: $('btnZoomOut'), outZoom: $('outZoom'),
@@ -47,6 +55,7 @@ const els = {
   statAcc: $('statAcc'), statAccSub: $('statAccSub'),
   statWindow: $('statWindow'), statWindowSub: $('statWindowSub'),
   statJitter: $('statJitter'), statSimTime: $('statSimTime'), statSyncCount: $('statSyncCount'),
+  statRateRatio: $('statRateRatio'), statRateRatioSub: $('statRateRatioSub'),
   nodeMaster: $('nodeMaster'), nodeSlave: $('nodeSlave'),
   linkCanvas: $('linkCanvas'), graphCanvas: $('graphCanvas'), clockCanvas: $('clockCanvas'), log: $('log'),
   alerts: $('alerts'),
@@ -132,6 +141,7 @@ function readConfig() {
     timeShift: +els.cfgTimeShift.value,
     slavePpm,
     stability: Math.max(0, +els.cfgStability.value),   // %
+    corrMode: els.cfgCorrMode.value,     // 'both' = phase+frequency servo, 'phase' = hard step
     cycleTime: Math.max(10, +els.cfgCycle.value),
     freeze: els.cfgFreeze.checked,
     syncTimeout: Math.max(0, +els.cfgSyncTimeout.value),
@@ -182,6 +192,14 @@ function resetState() {
     nextPdelayTime: cfg.startMs + cfg.pdelayInterval,
     nextSampleTime: cfg.startMs,
     meanPathDelayUs: 0.3,
+    // frequency servo (syntonization) + rateRatio
+    rateCorrPpm: 0,                 // running frequency correction applied to the slave clock (ppm)
+    servoIntegralPpm: 0,            // PI integral accumulator
+    rateRatio: 1,                   // measured master/slave frequency ratio
+    freqErrPpm: 0,                  // last estimated residual frequency error (ppm)
+    servoLocked: false,             // true once the servo has converged
+    lockStreak: 0,                  // consecutive in-lock syncs
+    prevSyncMeas: null,             // {t1, t2Hw} of the previous sync, for rateRatio
     lastPdelay: null,
     lastSync: null,
     lastPdelayReady: null,          // Pdelay snapshot latched when its resp lands (drives δ panel)
@@ -282,6 +300,26 @@ function performSync() {
   // regardless of the local oscillator state. Record it for the plot.
   state.rxMasterTs = t1;
 
+  // --- rateRatio measurement (neighbor/end-to-end frequency ratio) ---
+  // From two consecutive Sync exchanges: how much master time elapsed (Δt₁)
+  // vs how much the slave's own HW clock advanced (Δt₂). r > 1 means the slave
+  // runs slower than the master. This feeds the frequency servo and, in a real
+  // stack, scales the correctionField. Measured from HW ingress (t2Hw) so it is
+  // independent of any software phase step.
+  let rateRatio = state.rateRatio;
+  let freqErrPpm = state.freqErrPpm;
+  if (state.prevSyncMeas) {
+    const dM = t1 - state.prevSyncMeas.t1;        // master elapsed (ms)
+    const dS = t2Hw - state.prevSyncMeas.t2Hw;    // slave HW clock elapsed (ms)
+    if (dM > 1e-6 && dS > 1e-6) {
+      rateRatio = dM / dS;                         // >1 ⇒ slave slower than master
+      freqErrPpm = (rateRatio - 1) * 1e6;          // ppm the slave must add to match
+    }
+  }
+  state.prevSyncMeas = { t1, t2Hw };
+  state.rateRatio = rateRatio;
+  state.freqErrPpm = freqErrPpm;
+
   // STBM sync-loss timeout: if no valid sync has been APPLIED for longer than
   // the timeout (e.g. because the local clock is frozen and every sync fails
   // the 6.25% plausibility check → holdover), the time base reverts to
@@ -293,26 +331,52 @@ function performSync() {
   }
 
   let outcome, correction = 0;
+  const servoMode = cfg.corrMode === 'both';
   if (!state.synchronized) {
-    // Unsynchronized -> always adopt master time.
+    // Unsynchronized -> always adopt master time (hard phase step in both modes).
     state.slaveClock -= offsetFromMaster;
     correction = -offsetFromMaster;
     state.synchronized = true;
     state.lastSyncTime = state.simTime;
     state.syncCount++;
     outcome = 'init';
+    // Restart the servo from the freshly-adopted phase.
+    state.servoIntegralPpm = 0;
+    state.rateCorrPpm = 0;
+    state.servoLocked = false;
+    state.lockStreak = 0;
     flashNode('slave');
     log('ok', 'SYN INIT', `Initial SYNC — offsetFromMaster ${fmtSigned(offsetFromMaster)}, correction ${fmtSigned(correction)}`);
   } else if (cfg.acceptAll || Math.abs(deviation) < window) {
     // Accept-all mode, or synchronized & within plausibility window -> apply.
-    state.slaveClock -= offsetFromMaster;
-    correction = -offsetFromMaster;
+    if (servoMode) {
+      // PHASE + FREQUENCY: run a PI clock servo (syntonization). Instead of a
+      // hard phase step, steer the oscillator RATE so the offset converges and
+      // stays flat between syncs. fErr is the ppm that would null the current
+      // offset over one sync interval.
+      const Tms = Math.max(1, timeSinceLast);
+      const fErr = (offsetFromMaster / Tms) * 1e6;      // implied freq error (ppm)
+      state.servoIntegralPpm = clampPpm(state.servoIntegralPpm + SERVO_KI * fErr);
+      state.rateCorrPpm = clampPpm(-(SERVO_KP * fErr + state.servoIntegralPpm));
+      correction = 0;                                   // no discontinuous jump
+      // Lock detection: residual per-interval error small for several syncs.
+      if (Math.abs(fErr) <= LOCK_PPM) state.lockStreak++;
+      else state.lockStreak = 0;
+      state.servoLocked = state.lockStreak >= LOCK_STREAK;
+    } else {
+      // PHASE ONLY: classic hard step to the master each sync.
+      state.slaveClock -= offsetFromMaster;
+      correction = -offsetFromMaster;
+      state.rateCorrPpm = 0;
+      state.servoLocked = false;
+    }
     state.lastSyncTime = state.simTime;
     state.syncCount++;
     outcome = 'apply';
     flashNode('slave');
     const why = cfg.acceptAll ? 'accept-all' : `offset ${fmtSigned(offsetFromMaster)} < window ±${window.toFixed(2)} ms`;
-    log('ok', 'SYN OK', `SYNC applied — ${why}, correction ${fmtSigned(correction)}`);
+    const how = servoMode ? `servo rateCorr ${state.rateCorrPpm >= 0 ? '+' : ''}${state.rateCorrPpm.toFixed(0)} ppm` : `correction ${fmtSigned(correction)}`;
+    log('ok', 'SYN OK', `SYNC applied — ${why}, ${how}`);
   } else {
     // Deviation exceeds plausibility window -> reject (holdover).
     outcome = 'reject';
@@ -344,6 +408,8 @@ function performSync() {
     notifyDelay, hwTs: cfg.hwTs, pdelayEn: cfg.pdelayEn, stepMode: cfg.stepMode,
     offsetFromMaster, deviation, window, timeSinceLast, correction, outcome,
     inSpec: Math.abs(offsetFromMaster) <= cfg.accuracyUs / 1000,
+    corrMode: cfg.corrMode, rateRatio, freqErrPpm,
+    rateCorrPpm: state.rateCorrPpm, servoLocked: state.servoLocked,
   };
   state.lastSync = sy;
 
@@ -489,8 +555,9 @@ function advance(dt) {
   while (remaining > 0) {
     const nextEvent = Math.min(state.nextSyncTime, state.nextCycleTime, state.nextPdelayTime, state.nextSampleTime);
     const stepDt = Math.min(remaining, Math.max(0.5, nextEvent - state.simTime));
-    // advance slave clock by its own (drifting) rate — unless frozen/stopped
-    if (!cfg.freeze) state.slaveClock += stepDt * slaveRate();
+    // advance slave clock by its own (drifting) rate plus any servo frequency
+    // correction (syntonization) — unless frozen/stopped
+    if (!cfg.freeze) state.slaveClock += stepDt * (slaveRate() + state.rateCorrPpm / 1e6);
     state.simTime += stepDt;
     remaining -= stepDt;
 
@@ -1249,6 +1316,11 @@ function updateComputePanels() {
 
     if (sy.outcome === 'reject') {
       els.syCorrection.textContent = 'correction applied: none (rejected)';
+    } else if (sy.corrMode === 'both') {
+      const lockTxt = sy.servoLocked ? '<span class="ok">LOCKED</span>' : '<span class="warn">acquiring</span>';
+      els.syCorrection.innerHTML =
+        `frequency servo: rateRatio <span class="ok">${sy.rateRatio.toFixed(6)}</span>, ` +
+        `rateCorr <span class="warn">${sy.rateCorrPpm >= 0 ? '+' : ''}${sy.rateCorrPpm.toFixed(0)} ppm</span> · ${lockTxt}`;
     } else {
       els.syCorrection.innerHTML =
         `correction applied to slave clock: <span class="warn">${fmtAuto(sy.correction, true)}</span>`;
@@ -1382,6 +1454,24 @@ function updateReadouts(force) {
   els.statJitter.textContent = state.jitter.toFixed(3) + ' ms';
   els.statJitter.className = 'tile-value ' + (state.jitter < JITTER_LIMIT ? 'ok' : 'bad');
 
+  // rateRatio / frequency-servo tile
+  if (els.statRateRatio) {
+    if (!state.synchronized) {
+      els.statRateRatio.textContent = '—';
+      els.statRateRatio.className = 'tile-value';
+      els.statRateRatioSub.textContent = 'not synchronized';
+    } else if (cfg.corrMode === 'both') {
+      els.statRateRatio.textContent = state.rateRatio.toFixed(6);
+      els.statRateRatio.className = 'tile-value ' + (state.servoLocked ? 'ok' : 'warn');
+      els.statRateRatioSub.textContent =
+        `${state.servoLocked ? 'LOCKED' : 'acquiring'} · rateCorr ${state.rateCorrPpm >= 0 ? '+' : ''}${state.rateCorrPpm.toFixed(0)} ppm`;
+    } else {
+      els.statRateRatio.textContent = state.rateRatio.toFixed(6);
+      els.statRateRatio.className = 'tile-value';
+      els.statRateRatioSub.textContent = 'phase-only · no freq servo';
+    }
+  }
+
   // sim time
   els.statSimTime.textContent = `${Math.round(state.simTime).toLocaleString()} ms`;
   els.statSyncCount.textContent = `${state.syncCount} syncs`;
@@ -1505,6 +1595,18 @@ els.btnZoomOut.addEventListener('click', () => { view.spanMs *= 2; applyZoom(); 
 // Live-apply config that is safe to change mid-run
 ['cfgMasterFreq','cfgSyncInterval','cfgTimeShift','cfgSlaveFreq','cfgStability','cfgCycle','cfgAccuracy','cfgPdelay','cfgStaticPath','cfgNoise','cfgSyncJitter','cfgPollPeriod','cfgBusMax','cfgSyncTimeout','cfgTimeLeap','cfgAcceptAll']
   .forEach((id) => els[id].addEventListener('change', () => { if (state.running) readConfig(); }));
+
+// Correction mode (phase-only vs phase+frequency servo): apply live and reset
+// the servo so it re-acquires cleanly from the current phase.
+els.cfgCorrMode.addEventListener('change', () => {
+  if (state.running) readConfig();
+  state.servoIntegralPpm = 0;
+  state.rateCorrPpm = 0;
+  state.servoLocked = false;
+  state.lockStreak = 0;
+  state.prevSyncMeas = null;
+  updateReadouts(true);
+});
 
 // Timestamping mode (1/2-step) and Pdelay enable change which frames run, the
 // active lanes/legend, the HW-timestamp rows and the offset formula. Apply
