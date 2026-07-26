@@ -815,3 +815,34 @@ table.ts .val {
   color: var(--muted);
 }
 .footer-meta .footer-dot { color: var(--border); }
+
+/* ---------------- Feedback & community ---------------- */
+.feedback {
+  max-width: 1100px;
+  margin: 36px auto 0;
+  padding: 24px;
+  border-top: 1px solid var(--border);
+}
+.feedback-title { font-size: 20px; margin: 0 0 8px; color: var(--text); }
+.feedback-intro { color: var(--muted); font-size: 14px; margin: 0 0 18px; max-width: 72ch; }
+.feedback-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 26px; }
+.fb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 600;
+  transition: border-color .15s, background .15s, transform .1s;
+}
+.fb-btn:hover { transform: translateY(-1px); background: var(--panel-2); }
+.fb-discuss:hover { border-color: var(--accent); }
+.fb-issue:hover { border-color: var(--warn); }
+.fb-star:hover { border-color: var(--slave); }
+.giscus { margin-top: 8px; }
+
