@@ -8,7 +8,7 @@
 
 > **▶ [Try the live demo](https://rudupa.github.io/EthTimeSync_Sim/)** — no install, runs entirely in your browser.
 
-<video src="https://github.com/rudupa/EthTimeSync_Sim/raw/main/Demo_1920x1080.mp4" controls muted loop width="100%"></video>
+<video src="https://github.com/user-attachments/assets/7f2569ed-a153-403a-8ff7-2448f83153fa" controls muted loop width="100%"></video>
 
 An interactive, single-page visualization of automotive/TSN time synchronization:
 **gPTP (IEEE 802.1AS)** offset correction and the **AUTOSAR STBM** (Synchronized
