@@ -847,5 +847,11 @@ table.ts .val {
 .fb-discuss:hover { border-color: var(--accent); }
 .fb-issue:hover { border-color: var(--warn); }
 .fb-star:hover { border-color: var(--slave); }
-.giscus { margin-top: 8px; }
+.feedback-sub { font-size: 15px; margin: 4px 0 10px; color: var(--text); }
+.feedback-hint { font-size: 12px; font-weight: 400; color: var(--muted); }
+/* Keep the Cusdis comment box a comfortable reading width and let its iframe
+   grow to fit its content so it doesn't show an internal scrollbar. */
+#cusdis_thread { margin-top: 8px;  }
+#cusdis_thread iframe { width: 100% !important; min-height: 330px; }
+
 
