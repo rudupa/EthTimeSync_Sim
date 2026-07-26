@@ -1597,9 +1597,11 @@ els.btnZoomOut.addEventListener('click', () => { view.spanMs *= 2; applyZoom(); 
   .forEach((id) => els[id].addEventListener('change', () => { if (state.running) readConfig(); }));
 
 // Correction mode (phase-only vs phase+frequency servo): apply live and reset
-// the servo so it re-acquires cleanly from the current phase.
+// the servo so it re-acquires cleanly from the current phase. Always re-read
+// config (running or not) so the choice takes effect even when changed while
+// the run is paused/idle — otherwise start() would use the stale mode.
 els.cfgCorrMode.addEventListener('change', () => {
-  if (state.running) readConfig();
+  readConfig();
   state.servoIntegralPpm = 0;
   state.rateCorrPpm = 0;
   state.servoLocked = false;
