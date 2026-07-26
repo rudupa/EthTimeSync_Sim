@@ -1,5 +1,13 @@
 # gPTP / STBM Time Synchronization Visualizer
 
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-online-3fb950?style=flat)](https://rudupa.github.io/EthTimeSync_Sim/)
+[![Docs](https://img.shields.io/badge/Docs-explainer-58a6ff?style=flat)](https://rudupa.github.io/EthTimeSync_Sim/docs.html)
+[![License: MIT](https://img.shields.io/badge/License-MIT-a371f7?style=flat)](LICENSE)
+![Vanilla JS](https://img.shields.io/badge/Built%20with-Vanilla%20JS%20%2B%20Canvas-d29922?style=flat)
+[![Stars](https://img.shields.io/github/stars/rudupa/EthTimeSync_Sim?style=flat)](https://github.com/rudupa/EthTimeSync_Sim/stargazers)
+
+> **▶ [Try the live demo](https://rudupa.github.io/EthTimeSync_Sim/)** — no install, runs entirely in your browser.
+
 An interactive, single-page visualization of automotive/TSN time synchronization:
 **gPTP (IEEE 802.1AS)** offset correction and the **AUTOSAR STBM** (Synchronized
 Time-Base Manager). Built with vanilla HTML/CSS/JavaScript and HTML5 Canvas — no
@@ -15,7 +23,7 @@ build step, no dependencies.
   available (t₁, t₂, δ, c, Δp) and computes the offset once all terms arrive.
 - STBM behavior: plausibility window, holdover, and timeLeap notifications.
 - Step mode to advance the simulation one fixed step at a time.
-- A detailed explainer page ([docs.html](docs.html)) covering every term and mode
+- A detailed explainer page ([open the docs](https://rudupa.github.io/EthTimeSync_Sim/docs.html)) covering every term and mode
   with worked numeric examples.
 
 ## Roadmap — planned improvements
@@ -49,9 +57,13 @@ Ranked by fidelity impact for a faithful master ↔ slave synchronization:
 - [ ] **Temperature-dependent oscillator drift** and **Pdelay filtering**
   (median/averaging of δ).
 
-## Run locally
+## Run it
 
-Just open `index.html` in a browser — there is nothing to install or build.
+**▶ [Open the live app on GitHub Pages](https://rudupa.github.io/EthTimeSync_Sim/)** — nothing to install or build.
+
+Prefer the deep-dive? **[Read the explainer](https://rudupa.github.io/EthTimeSync_Sim/docs.html)**.
+
+To run locally, just open `index.html` in a browser.
 
 ## Files
 

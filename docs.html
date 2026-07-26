@@ -4,6 +4,20 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>How gPTP / STBM Time Synchronization Works</title>
+  <meta name="description" content="A detailed, example-driven explanation of how gPTP (IEEE 802.1AS) and the AUTOSAR STBM synchronize clocks: the offset calculation, peer path delay (Pdelay), 1-step vs 2-step, HW vs SW timestamping, phase vs frequency correction (servo & rateRatio), and STBM plausibility/holdover/timeLeap." />
+  <meta name="keywords" content="gPTP explained, IEEE 802.1AS, PTP, IEEE 1588, time synchronization, Pdelay, meanPathDelay, offset calculation, 1-step 2-step, hardware timestamping, syntonization, rateRatio, neighborRateRatio, AUTOSAR STBM, EthTSyn, TSN, automotive Ethernet" />
+  <meta name="author" content="Ritesh Udupa" />
+  <link rel="canonical" href="https://rudupa.github.io/EthTimeSync_Sim/docs.html" />
+  <!-- Open Graph / social preview -->
+  <meta property="og:type" content="article" />
+  <meta property="og:title" content="How gPTP / STBM Time Synchronization Works" />
+  <meta property="og:description" content="Every symbol, mode, and equation behind gPTP / IEEE 802.1AS and AUTOSAR STBM time synchronization, with worked numeric examples." />
+  <meta property="og:url" content="https://rudupa.github.io/EthTimeSync_Sim/docs.html" />
+  <meta property="og:image" content="https://rudupa.github.io/EthTimeSync_Sim/preview.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="How gPTP / STBM Time Synchronization Works" />
+  <meta name="twitter:description" content="A visual, example-driven explainer of gPTP / IEEE 802.1AS and AUTOSAR STBM time synchronization." />
+  <meta name="twitter:image" content="https://rudupa.github.io/EthTimeSync_Sim/preview.png" />
   <!-- Google Analytics (GA4) -->
   <script async src="https://www.googletagmanager.com/gtag/js?id=G-XHBCMHM54F"></script>
   <script>

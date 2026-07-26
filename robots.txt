@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://rudupa.github.io/EthTimeSync_Sim/sitemap.xml
