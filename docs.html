@@ -496,6 +496,42 @@
       more obvious the difference.
     </div>
 
+    <h3>How this maps to AUTOSAR <code>StbMTimeCorrection</code></h3>
+    <p>
+      In a real AUTOSAR stack the phase-vs-frequency choice is not a single toggle — it is configured through the
+      <code>StbMTimeCorrection</code> container on a synchronized (slave) time base. That container exposes the same
+      two mechanisms this simulator models, just with more granularity:
+    </p>
+    <table class="cmp">
+      <caption>Simulator "Correction mode" vs the ECU configuration</caption>
+      <tr><th>Mechanism</th><th>In this simulator</th><th>AUTOSAR <code>StbMTimeCorrection</code> parameters</th></tr>
+      <tr>
+        <td><strong>Phase</strong> (offset)</td>
+        <td>Applied as an immediate hard step every sync. A step ≥ the <em>STBM time-leap threshold</em> raises <code>timeLeap</code>.</td>
+        <td><code>StbMOffsetCorrectionJumpThreshold</code> (jump vs ramp boundary) and <code>StbMOffsetCorrectionAdaptationInterval</code> (window over which a sub-threshold offset is <em>ramped in</em> smoothly instead of jumped).</td>
+      </tr>
+      <tr>
+        <td><strong>Frequency</strong> (rate)</td>
+        <td>A continuous PI servo estimates the residual rate error and outputs <code>rateCorr</code> (ppm).</td>
+        <td><code>StbMRateCorrectionMeasurementDuration</code> (window used to measure drift) and <code>StbMRateCorrectionsPerMeasurementDuration</code> (how many samples per window).</td>
+      </tr>
+      <tr>
+        <td><strong>Master rate</strong> (gateway)</td>
+        <td>Not modelled — single master → single slave.</td>
+        <td><code>StbMAllowMasterRateCorrection</code> and <code>StbMMasterRateDeviationMax</code> — only for a time <em>gateway</em> (slave upstream, master downstream) that corrects its own rate before forwarding time.</td>
+      </tr>
+    </table>
+    <div class="callout info">
+      <span class="lbl">Same intent, simplified mechanism</span>
+      The simulator's <em>Phase&nbsp;+&nbsp;frequency (servo)</em> mode corresponds to enabling
+      <strong>both</strong> offset and rate correction in <code>StbMTimeCorrection</code>. Two deliberate
+      simplifications: (1) real STBM rate correction is a <em>windowed measurement average</em> recomputed each
+      <code>MeasurementDuration</code>, not a continuous PI loop; and (2) real offset correction is
+      <em>threshold-gated</em> — small errors ramp over the adaptation interval (smooth, monotonic) while only
+      large ones jump — whereas the simulator always applies phase as a hard step and flags large steps as
+      <code>timeLeap</code>.
+    </div>
+
     <!-- ================================================================ -->
     <h2 id="epoch">10. The epoch value — is a non-zero epoch a convention?</h2>
     <p>
